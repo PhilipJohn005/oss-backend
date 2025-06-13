@@ -41,8 +41,10 @@ function extractImagesFromMarkdown(md: string): string[] {
 }
 
 app.post('/server/add-card', async (req, res) => {
-  const { repo_url, product_description, tags } = req.body;
+  const { repo_url, product_description, tags, access_token } = req.body;
+  
   const token = req.headers.authorization?.split(' ')[1];
+  
   if (!repo_url || !product_description || !tags || !token) {
     res.status(400).json({ error: 'repo_url, product_description, tags, and auth token are required' });
     return;
@@ -55,7 +57,7 @@ app.post('/server/add-card', async (req, res) => {
 
     const { owner, repo } = extractOwnerAndRepo(repo_url);
 
-    // Fetch issues (including PRs)
+    // Fetch issues 
     const apiUrl = `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=100`;
     const ghRes = await fetch(apiUrl, {
       headers: {
@@ -76,7 +78,6 @@ app.post('/server/add-card', async (req, res) => {
       throw new Error('GitHub API did not return an array of issues');
     }
 
-    // ❗ Filter out pull requests
     const issuesOnly = issuesJson.filter((issue: any) => !issue.pull_request);
 
     const issues = issuesOnly.map((iss: any) => ({
@@ -103,6 +104,37 @@ app.post('/server/add-card', async (req, res) => {
     if (supaErr) throw supaErr;
 
     res.status(200).json({ message: 'Card added with GitHub issues', issuesCount: issues.length });
+
+    try {
+      const webhookRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/hooks`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${access_token}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'oss-hub-app'
+        },
+        body: JSON.stringify({
+          name: 'web',
+          active: true,
+          events: ['issues'],
+          config: {
+            url: `${process.env.WEBHOOK_LISTENER_URL}`,
+            content_type: 'json'
+          }
+        })
+      });
+
+      const webhookJson: any = await webhookRes.json();
+
+      if (!webhookRes.ok) {
+        console.warn("GitHub Webhook error:", webhookJson);
+      } else {
+        console.log("Webhook created with ID:", webhookJson.id);
+      }
+    } catch (err) {
+      console.error("Webhook creation failed:", err);
+    }
+
   } catch (error: any) {
     console.error('ADD-CARD ERROR:', error);
     res.status(500).json({ error: error.message || 'Unknown error' });
