@@ -9,7 +9,20 @@ import dotenv from 'dotenv';
 dotenv.config({ path: '.env.local' });
 
 const app = express();
-app.use(cors());
+
+const allowedOrigins = [process.env.FRONTEND_ORIGIN || 'http://localhost:3000'];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true, // if using cookies/auth headers
+}));
+
 app.use(express.json());
 
 const supabaseUrl = process.env.SUPABASE_URL;
