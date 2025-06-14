@@ -20,8 +20,10 @@ app.use(cors({
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true, // if using cookies/auth headers
+  credentials: true, 
 }));
+
+
 
 app.use(express.json());
 
@@ -55,9 +57,9 @@ function extractImagesFromMarkdown(md: string): string[] {
 
 app.post('/server/add-card', async (req, res) => {
   const { repo_url, product_description, tags, access_token } = req.body;
-  
+
   const token = req.headers.authorization?.split(' ')[1];
-  
+
   if (!repo_url || !product_description || !tags || !token) {
     res.status(400).json({ error: 'repo_url, product_description, tags, and auth token are required' });
     return;
@@ -70,7 +72,7 @@ app.post('/server/add-card', async (req, res) => {
 
     const { owner, repo } = extractOwnerAndRepo(repo_url);
 
-    // Fetch issues 
+    // Fetch issues from GitHub
     const apiUrl = `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=100`;
     const ghRes = await fetch(apiUrl, {
       headers: {
@@ -93,16 +95,8 @@ app.post('/server/add-card', async (req, res) => {
 
     const issuesOnly = issuesJson.filter((issue: any) => !issue.pull_request);
 
-    const issues = issuesOnly.map((iss: any) => ({
-      id: iss.id,
-      title: iss.title,
-      description: iss.body ?? '',
-      link: iss.html_url,
-      issue_tags:iss.labels.map((label: any) => label.name),
-      images: extractImagesFromMarkdown(iss.body ?? '')
-    }));
-
-    const { error: supaErr } = await supabase
+    // Step 1: Insert card (without issues)
+    const { data: cardInsertData, error: cardError } = await supabase
       .from('cards')
       .insert([{
         card_name: repo,
@@ -111,13 +105,35 @@ app.post('/server/add-card', async (req, res) => {
         user_email,
         user_name,
         product_description,
-        issues
-      }]);
+      }])
+      .select('id');
 
-    if (supaErr) throw supaErr;
+    if (cardError || !cardInsertData || cardInsertData.length === 0) {
+      throw new Error(cardError?.message || 'Failed to insert card');
+    }
 
-    res.status(200).json({ message: 'Card added with GitHub issues', issuesCount: issues.length });
+    const card_id = cardInsertData[0].id;
 
+    // Step 2: Insert issues separately
+    const issues = issuesOnly.map((iss: any) => ({
+      card_id,
+      title: iss.title,
+      description: iss.body ?? '',
+      link: iss.html_url,
+      tags: iss.labels.map((label: any) => label.name),
+      image: extractImagesFromMarkdown(iss.body ?? '')[0] ?? null
+    }));
+
+    if (issues.length > 0) {
+      const { error: issueError } = await supabase
+        .from('issues')
+        .insert(issues);
+      if (issueError) throw issueError;
+    }
+
+    res.status(200).json({ message: 'Card and issues added', issuesCount: issues.length });
+
+    // Step 3: GitHub webhook creation
     try {
       const webhookRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/hooks`, {
         method: 'POST',
@@ -200,31 +216,55 @@ app.get('/server/fetch-user-cards', async (req, res) => {
   }
 });
 
-app.get('/server/fetch-card-des/:id',async(req,res)=>{
+
+app.get('/server/fetch-card-des/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
+
   if (isNaN(id)) {
     res.status(400).json({ error: 'Invalid ID format' });
     return;
   }
+
   try {
-    const { data, error } = await supabase
+    // Fetch the card
+    const { data: card, error: cardError } = await supabase
       .from('cards')
       .select('*')
       .eq('id', id)
       .single();
 
-    if (error || !data) {
-      res.status(404).json({ error: 'Card not found', detail: error });
+    if (cardError || !card) {
+      res.status(404).json({ error: 'Card not found', detail: cardError });
       return;
     }
 
-     res.status(200).json({ data });
+    // Fetch related issues
+    const { data: issues, error: issuesError } = await supabase
+      .from('issues')
+      .select('*')
+      .eq('card_id', id)
+      .order('id', { ascending: false }); // newest issues first (optional)
+
+    if (issuesError) {
+      res.status(500).json({ error: 'Failed to fetch issues', detail: issuesError });
+      return;
+    }
+
+    // Combine and send
+    res.status(200).json({
+      data: {
+        ...card,
+        issues: issues || [],
+      },
+    });
+
   } catch (err) {
-    console.error('Error fetching card by ID:', err);
+    console.error('Error fetching card with issues:', err);
     res.status(500).json({ error: 'Server error' });
     return;
   }
-})
+});
+
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
