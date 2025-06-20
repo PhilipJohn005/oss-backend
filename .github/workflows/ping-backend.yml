@@ -1,13 +1,13 @@
-name: keep Render Backend Awake
+name: Keep Render Backend Awake
 
 on:
   schedule:
     - cron: "*/5 * * * *"
-  
+  workflow_dispatch:
 
 jobs:
   ping:
-    runs-on: Ubuntu-latest
+    runs-on: ubuntu-latest
     steps:
-      - name: Ping for render Backend
+      - name: Ping Render backend
         run: curl -s -o /dev/null -w "%{http_code}" https://oss-backend-2.onrender.com/ping
