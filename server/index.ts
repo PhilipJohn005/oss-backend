@@ -266,6 +266,10 @@ app.get('/server/fetch-card-des/:id', async (req, res) => {
 });
 
 
+app.get('/ping',(req,res)=>{
+  res.status(200).send('Ok');
+})
+
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
