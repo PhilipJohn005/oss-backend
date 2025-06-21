@@ -266,9 +266,11 @@ app.get('/server/fetch-card-des/:id', async (req, res) => {
 });
 
 
-app.get('/ping',(req,res)=>{
-  res.status(200).send('Ok');
-})
+app.get("/ping", (req, res) => {
+  console.log("Pinged at", new Date().toISOString());
+  res.send("OK");
+});
+
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
