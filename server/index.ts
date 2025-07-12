@@ -4,7 +4,7 @@ import cors from 'cors';
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import { fetch } from 'undici';
-
+import getEmbedding from './embed'
 import dotenv from 'dotenv';
 dotenv.config({ path: '.env.local' });
 
@@ -55,7 +55,42 @@ function extractImagesFromMarkdown(md: string): string[] {
   return urls;
 }
 
+
+async function fetchAllIssues(owner: string, repo: string): Promise<any[]> {
+  let allIssues: any[] = [];
+  let page = 1;
+
+  while (true) {
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=100&page=${page}`;
+
+    const res = await fetch(apiUrl, {
+      headers: {
+        Authorization: `token ${GITHUB_TOKEN}`,
+        'User-Agent': 'OSS-Hub-App',
+        Accept: 'application/vnd.github.v3+json',
+      },
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(`GitHub API error on page ${page}: ${err || JSON.stringify(err)}`);
+    }
+
+    const pageIssues = await res.json() as any[];
+
+    if (pageIssues.length === 0) break; // done
+    allIssues.push(...pageIssues);
+    page++;
+  }
+
+  return allIssues;
+}
+
+
+
 app.post('/server/add-card', async (req, res) => {
+  console.log("🔥 /server/add-card endpoint hit");
+
   const { repo_url, product_description, tags } = req.body;
 
   const token = req.headers.authorization?.split(' ')[1];
@@ -65,49 +100,89 @@ app.post('/server/add-card', async (req, res) => {
     return;
   }
 
-  try {
-    const decoded = jwt.verify(token, process.env.BACKEND_JWT_SECRET as string) as any;
+  try{
+    const decoded = jwt.verify(token, process.env.BACKEND_JWT_SECRET as string) as any;  //wrong will be caught in exception
     const user_email = decoded.email;
     const user_name = decoded.name;
     const access_token=decoded.accessToken;
 
     const { owner, repo } = extractOwnerAndRepo(repo_url);
 
+    // 🔥 1. Get repo metadata
+      const repoDetailsRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+        headers: {
+          Authorization: `token ${GITHUB_TOKEN}`,
+          'User-Agent': 'OSS-Hub-App',
+          Accept: 'application/vnd.github.v3+json',
+        }
+      });
+      const repoDetails = await repoDetailsRes.json();
+
+      if (!repoDetailsRes.ok) {
+        const details = repoDetails as { message?: string };
+        throw new Error(`GitHub repo details error: ${details.message || 'unknown error'}`);
+      }
+
+      const { stargazers_count, forks_count,description } = repoDetails as { stargazers_count?: number; forks_count?: number;description?:string };
+      const stars = stargazers_count || 0;
+      const forks = forks_count || 0;
+
+      // 🔥 2. Get language stats
+      const langRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/languages`, {
+        headers: {
+          Authorization: `token ${GITHUB_TOKEN}`,
+          'User-Agent': 'OSS-Hub-App',
+          Accept: 'application/vnd.github.v3+json',
+        }
+      });
+      const langJson = await langRes.json();
+
+      if (!langRes.ok) {
+        const langErr = langJson as { message?: string };
+        throw new Error(`GitHub languages API error: ${langErr.message || 'unknown error'}`);
+      }
+
+      const topLanguage = Object.entries(langJson as Record<string, number>)
+        .sort((a, b) => b[1] - a[1])[0]?.[0] || 'Unknown';
+      
+
     // Fetch issues from GitHub
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=100`;
-    const ghRes = await fetch(apiUrl, {
-      headers: {
-        Authorization: `token ${GITHUB_TOKEN}`,
-        'User-Agent': 'OSS-Hub-App',
-        Accept: 'application/vnd.github.v3+json',
-      },
-    });
+   
 
-    if (!ghRes.ok) {
-      const err = await ghRes.json();
-      throw new Error(`GitHub API error: ${err || JSON.stringify(err)}`);
-    }
-
-    const issuesJson = await ghRes.json();
+    const issuesJson = await fetchAllIssues(owner, repo);
 
     if (!Array.isArray(issuesJson)) {
       throw new Error('GitHub API did not return an array of issues');
     }
 
     const issuesOnly = issuesJson.filter((issue: any) => !issue.pull_request);
+    const openIssuesCount = issuesOnly.length;
+    
+    const combinedRepoText = `${repo} ${description ?? ''} ${product_description}`;
+    const combinedRepoTextEmbedding=await getEmbedding(combinedRepoText);
+    console.log("[🧠 Embedding result]", combinedRepoTextEmbedding);
 
-    // Step 1: Insert card (without issues)
+   console.log("[🔍 combinedRepoText]", combinedRepoText);
+
+
+    
     const { data: cardInsertData, error: cardError } = await supabase
-      .from('cards')
-      .insert([{
-        card_name: repo,
-        repo_url,
-        tags,
-        user_email,
-        user_name,
-        product_description,
-      }])
-      .select('id');
+    .from('cards')
+    .insert([{
+      card_name: repo,
+      repo_url,
+      tags,
+      user_email,
+      user_name,
+      product_description,
+      stars,
+      forks,
+      top_language: topLanguage,
+      open_issues_count: openIssuesCount,
+      embedding: Array.isArray(combinedRepoTextEmbedding) ? combinedRepoTextEmbedding : null
+    }])
+    .select('id');
+
 
     if (cardError || !cardInsertData || cardInsertData.length === 0) {
       throw new Error(cardError?.message || 'Failed to insert card');
@@ -115,26 +190,36 @@ app.post('/server/add-card', async (req, res) => {
 
     const card_id = cardInsertData[0].id;
 
-    // Step 2: Insert issues separately
-    const issues = issuesOnly.map((iss: any) => ({
-      card_id,
-      title: iss.title,
-      description: iss.body ?? '',
-      link: iss.html_url,
-      tags: iss.labels.map((label: any) => label.name),
-      image: extractImagesFromMarkdown(iss.body ?? '')[0] ?? null
-    }));
+   
+    const issuesWithEmbeddings = await Promise.all(  //sabka await karo so that we get the proper updated data
+      issuesOnly.map(async (iss: any,index:number) => {
+         const combinedText = `${iss.title} ${iss.body ?? ''}`;
 
-    if (issues.length > 0) {
+        const embedding = await getEmbedding(combinedText);
+
+        return {
+          card_id,
+          title: iss.title,
+          description: iss.body ?? '',
+          embedding: Array.isArray(embedding) ? embedding : null,
+          link: iss.html_url,
+          tags: iss.labels.map((label: any) => label.name),
+          image: extractImagesFromMarkdown(iss.body ?? '')[0] ?? null
+        };
+      })
+    );
+
+    const validIssues=issuesWithEmbeddings.filter((issue)=>issue.embedding!==null)
+
+    if (validIssues.length > 0) {
       const { error: issueError } = await supabase
         .from('issues')
-        .insert(issues);
+        .insert(validIssues);
       if (issueError) throw issueError;
     }
 
-    res.status(200).json({ message: 'Card and issues added', issuesCount: issues.length });
 
-    // Step 3: GitHub webhook creation
+    
     try {
       const webhookRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/hooks`, {
         method: 'POST',
@@ -157,19 +242,40 @@ app.post('/server/add-card', async (req, res) => {
       const webhookJson: any = await webhookRes.json();
 
       if (!webhookRes.ok) {
-        console.warn("GitHub Webhook error:", webhookJson);
-      } else {
-        console.log("Webhook created with ID:", webhookJson.id);
-      }
+        if (webhookRes.status === 401 || webhookJson?.message?.includes('Bad credentials')) {
+          res.status(403).json({ error: 'GitHub access expired. Please log in again.' });
+          
+        }
+        if (
+          webhookRes.status === 422 &&
+          webhookJson?.errors?.some((err: any) => err.message === 'Hook already exists on this repository')
+        ) {
+          console.warn("ℹ️ Webhook already exists, continuing...");
+          // Do NOT treat this as failure — just proceed
+          res.status(200).json({ message: 'Card and issues added (webhook already exists)', issuesCount: validIssues.length });
+          return;
+        }
+        
+        res.status(500).json({ error: 'Webhook creation failed. Check repo permissions or try again later.' });
+        
+        return;
+      } 
+      res.status(200).json({ message: 'Card and issues added', issuesCount: validIssues.length });
+      return;
+
     } catch (err) {
       console.error("Webhook creation failed:", err);
+      res.status(500).json({ error: 'Unexpected error during webhook setup' }); // ✅ THIS LINE IS NEEDED
+      return;
     }
-
-  } catch (error: any) {
+  }
+   catch (error: any) {
     console.error('ADD-CARD ERROR:', error);
     res.status(500).json({ error: error.message || 'Unknown error' });
   }
 });
+
+
 
 app.get('/server/fetch-card', async (req, res) => {
   const { error, data } = await supabase.from('cards').select('*');
@@ -216,6 +322,7 @@ app.get('/server/fetch-user-cards', async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
 
 
 app.get('/server/fetch-card-des/:id', async (req, res) => {
@@ -267,10 +374,31 @@ app.get('/server/fetch-card-des/:id', async (req, res) => {
 });
 
 
-app.get("/ping", (req, res) => {
-  console.log("Pinged at", new Date().toISOString());
-  res.send("OK");
+app.post('/server/generate-embedding', async (req, res) => {
+  const { text } = req.body;
+
+  if (!text || typeof text !== 'string') {
+    res.status(400).json({ error: 'Invalid input: text is required' });
+    return;
+  }
+
+  try {
+    console.time('🧠 [Total embedding time]');
+    const embedding = await getEmbedding(text);
+    console.timeEnd('🧠 [Total embedding time]');
+
+    if (!embedding || !Array.isArray(embedding)) {
+      res.status(500).json({ error: 'Embedding failed' });
+      return;
+    }
+
+    res.status(200).json({ embedding });
+  } catch (err: any) {
+    console.error('❌ Error in /server/generate-embedding:', err);
+    res.status(500).json({ error: err.message || 'Unknown error' });
+  }
 });
+
 
 
 const PORT = process.env.PORT || 4000;
