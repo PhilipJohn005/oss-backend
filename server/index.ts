@@ -10,7 +10,7 @@ dotenv.config({ path: '.env.local' });
 
 const app = express();
 
-const allowedOrigins = [process.env.FRONTEND_ORIGIN || 'http://localhost:3000'];
+const allowedOrigins = ['https://oss-main-website.vercel.app' , 'http://localhost:3000'];
 
 app.use(cors({
   origin: function (origin, callback) {
