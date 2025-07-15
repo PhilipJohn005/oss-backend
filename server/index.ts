@@ -399,6 +399,15 @@ app.post('/server/generate-embedding', async (req, res) => {
   }
 });
 
+app.get('/ping', (req, res) => {
+  try {
+    console.log(`Ping hit at: ${new Date().toISOString()}`);
+    res.status(200).send("Pinged");
+  } catch (error) {
+    console.error("Ping error:", error);
+    res.status(500).send("Something went wrong");
+  }
+});
 
 
 const PORT = process.env.PORT || 4000;
