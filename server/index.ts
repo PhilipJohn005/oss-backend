@@ -10,11 +10,24 @@ dotenv.config({ path: '.env.local' });
 
 const app = express();
 
+// Replace your current CORS setup with:
+const allowedOrigins = ['http://localhost:3000', 'https://oss-main-website.vercel.app'];
+
 app.use(cors({
-  origin: '*',
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-
+// Handle preflight requests
+app.options('*', cors());
 
 app.use(express.json());
 
@@ -81,7 +94,8 @@ async function fetchAllIssues(owner: string, repo: string): Promise<any[]> {
 
 app.post('/server/add-card', async (req, res) => {
   console.log("🔥 /server/add-card endpoint hit");
-
+  res.header('Access-Control-Allow-Origin', 'http://localhost:3000');
+      res.header('Access-Control-Allow-Credentials', 'true');
   const { repo_url, product_description, tags } = req.body;
 
   const token = req.headers.authorization?.split(' ')[1];
