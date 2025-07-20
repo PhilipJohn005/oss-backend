@@ -4,7 +4,7 @@ import cors from 'cors';
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import { fetch } from 'undici';
-import getEmbedding from './embed'
+import getEmbedding from './embed.js'; 
 import dotenv from 'dotenv';
 dotenv.config({ path: '.env.local' });
 
@@ -198,28 +198,37 @@ console.timeEnd("📦 Insert card into Supabase");
     }
 
     const card_id = cardInsertData[0].id;
+   // In your route handler:
 
-   
-    const issuesWithEmbeddings = await Promise.all(  //sabka await karo so that we get the proper updated data
-      issuesOnly.map(async (iss: any,index:number) => {
-         const combinedText = `${iss.title} ${iss.body ?? ''}`;
 
-        const embedding = await getEmbedding(combinedText);
+// Prepare all issue texts upfront
+const issueTexts = issuesOnly.map(iss => `${iss.title} ${iss.body ?? ''}`.substring(0, 2000)); // Limit to first 2000 chars
 
-        return {
-          card_id,
-          title: iss.title,
-          description: iss.body ?? '',
-          embedding: Array.isArray(embedding) ? embedding : null,
-          link: iss.html_url,
-          tags: iss.labels.map((label: any) => label.name),
-          image: extractImagesFromMarkdown(iss.body ?? '')[0] ?? null
-        };
-      })
-    );
+// Process in optimal batch sizes (8-16 works well for most systems)
+const BATCH_SIZE = 8;
+const allEmbeddings: (number[] | null)[] = [];
 
-    const validIssues=issuesWithEmbeddings.filter((issue)=>issue.embedding!==null)
-console.time("📦 Insert issues into Supabase");
+console.time("🧠 Batch embedding issues");
+for (let i = 0; i < issueTexts.length; i += BATCH_SIZE) {
+  const batchTexts = issueTexts.slice(i, i + BATCH_SIZE);
+  const batchEmbeddings = await getEmbedding(batchTexts) as number[][];
+  allEmbeddings.push(...batchEmbeddings);
+}
+console.timeEnd("🧠 Batch embedding issues");
+
+// Map embeddings back to issues
+const issuesWithEmbeddings = issuesOnly.map((iss, index) => ({
+  card_id,
+  title: iss.title,
+  description: iss.body ?? '',
+  embedding: allEmbeddings[index] || null,
+  link: iss.html_url,
+  tags: iss.labels.map((label: any) => label.name),
+  image: extractImagesFromMarkdown(iss.body ?? '')[0] ?? null
+}));
+
+const validIssues = issuesWithEmbeddings.filter(issue => issue.embedding !== null);
+    console.time("📦 Insert issues into Supabase");
 
     if (validIssues.length > 0) {
       const { error: issueError } = await supabase
