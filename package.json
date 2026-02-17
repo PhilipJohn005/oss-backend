@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "set NODE_OPTIONS=--loader ts-node/esm && ts-node server/index.ts",
+    "dev": "ts-node server/index.ts",
     "build": "tsc",
     "start": "node dist/index.js"
   },
