@@ -1,8 +1,7 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",  // Changed from ES2022 to NodeNext
-    "moduleResolution": "NodeNext",
+    "target": "ES2021",
+    "module": "CommonJS",
     "rootDir": "server",
     "outDir": "./dist",
     "noEmit": false,
